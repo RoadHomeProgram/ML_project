@@ -1,0 +1,179 @@
+---
+title: "generate figures"
+author: "Ryan Schubert"
+date: "8/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+"%&%" = function(a,b) paste0(a,b)
+```
+
+
+```{r}
+dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+AUC_files<-list.files(dir,"AUC_ROC.csv")
+AUC_list<-vector(mode="list",length(AUC_files))
+for (f in 1:length(AUC_files)){
+  AUC_list[[f]]<-fread(dir %&% AUC_files[f]) %>% mutate(outcome=gsub("_AUC_ROC.csv","",AUC_files[f]))
+}
+AUC_df<-bind_rows(AUC_list)
+```
+
+```{r}
+dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+accuracy_files<-list.files(dir,"accuracy.csv")
+accuracy_list<-vector(mode="list",length(accuracy_files))
+for (f in 1:length(accuracy_files)){
+  accuracy_list[[f]]<-fread(dir %&% accuracy_files[f]) %>% mutate(outcome=gsub("_accuracy.csv","",accuracy_files[f]))
+}
+accuracy_df<-bind_rows(accuracy_list)
+```
+
+# barplots first
+
+first AUC-ROC
+accuracy relative to chance
+AUC-PR
+
+```{r}
+AUC_summary<-AUC_df %>% pivot_longer(!outcome) %>% group_by(outcome,name) %>% summarise(meanAUC=mean(value))
+AUC_summary %>% filter(name!="degenerate") %>% fwrite(dir %&% "Average_cv_AUC_all_algorithms_and_outcomes.csv")
+
+plot_data<-AUC_summary %>% ungroup() %>% group_by(outcome) %>% slice_max(meanAUC,n=1,with_ties = F)
+plot_data %>% fwrite(dir %&% "Average_cv_AUC_best_algorithms_each_outcomes.csv")
+library(scales)
+AUC1<-ggplot(plot_data) +
+  geom_col(aes(x=reorder(outcome, -meanAUC),y=meanAUC,fill=name),position="dodge") +
+  theme_bw() +
+  scale_fill_viridis(discrete = T,) +
+  geom_abline(slope = 0,intercept=0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  labs(fill="Algorithm")+
+  scale_y_continuous(limits=c(0.5,1),oob = rescale_none) +
+  xlab("Response Variable") +
+  ggtitle("Highest Mean CV AUC-ROC Per Response")
+  ggsave(dir %&% "AUC_bar_ylim0.5-1.png",plot=AUC1)
+AUC2<-ggplot(plot_data) +
+  geom_col(aes(x=reorder(outcome, -meanAUC),y=meanAUC,fill=name),position="dodge") +
+  theme_bw() +
+  scale_fill_viridis(discrete = T,) +
+  geom_abline(slope = 0,intercept=0.5) +
+  labs(fill="Algorithm") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  scale_y_continuous(limits=c(0,1),oob = rescale_none)+
+  xlab("Response Variable") +
+  ggtitle("Highest Mean CV AUC-ROC Per Response")
+  ggsave(dir %&% "AUC_bar_ylim0-1.png",plot=AUC2)
+
+```
+next make actual ROC plots with pooled data
+
+
+```{r}
+predictions_files<-list.files(dir,"predictions.csv")
+predictions_list<-vector(mode="list",length(predictions_files))
+for (f in 1:length(predictions_files)){
+  predictions_list[[f]]<-fread(dir %&% predictions_files[f]) %>% mutate(outcome=gsub("_predictions.csv","",predictions_files[f]))
+}
+predictions_df<-bind_rows(predictions_list)
+
+classes_files<-list.files(dir,"classes.csv")
+classes_list<-vector(mode="list",length(classes_files))
+for (f in 1:length(classes_files)){
+  classes_list[[f]]<-fread(dir %&% classes_files[f]) %>% mutate(outcome=gsub("_classes.csv","",classes_files[f]))
+}
+classes_df<-bind_rows(classes_list)
+
+outcomes<-cbind.data.frame(predictions_df,classes_df[,-c(1,3)])
+
+methods<-c("Ridge","elastic","gbm","SVMLinear","MMPClogistic","RF","naivelogistic")
+response<-unique(outcomes$outcome)
+  
+
+for (r in response){
+  actual<-outcomes %>% filter(outcome == r) %>% select(one_of(c("out"))) %>% unlist %>% unname() 
+  Ridgepreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("Ridge"))) %>% unlist %>% unname()
+  elasticpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("elastic"))) %>% unlist %>% unname()
+  gbmpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("gbm"))) %>% unlist %>% unname()
+  SVMLinearpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("SVMLinear"))) %>% unlist %>% unname()
+  MMPClogisticpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("MMPClogistic"))) %>% unlist %>% unname()
+  RFpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("RF"))) %>% unlist %>% unname()
+  naivelogisticpreds<-outcomes %>% filter(outcome == r) %>% select(one_of(c("naivelogistic"))) %>% unlist %>% unname() 
+    
+  predObjRidge<-prediction(Ridgepreds,actual)
+  predObjelastic<-prediction(elasticpreds,actual)
+  predObjgbm<-prediction(gbmpreds,actual)
+  predObjSVMLinear<-prediction(SVMLinearpreds,actual)
+  predObjMMPClogistic<-prediction(MMPClogisticpreds,actual)
+  predObjRF<-prediction(RFpreds,actual)
+  predObjnaivelogistic<-prediction(naivelogisticpreds,actual)
+  
+  Ridgeperf<-performance(predObjRidge,"tpr","fpr")
+  elasticperf<-performance(predObjelastic,"tpr","fpr")
+  gbmperf<-performance(predObjgbm,"tpr","fpr")
+  SVMLinearperf<-performance(predObjSVMLinear,"tpr","fpr")
+  MMPClogisticperf<-performance(predObjMMPClogistic,"tpr","fpr")
+  RFperf<-performance(predObjRF,"tpr","fpr")
+  naivelogisticperf<-performance(predObjnaivelogistic,"tpr","fpr")
+  
+  png(dir %&% r %&% "_ROC_curve.png")
+  plot(Ridgeperf,col="red",main=r)
+  plot(elasticperf,add=T,col="blue")
+  plot(gbmperf,add=T,col="dark green")
+  plot(SVMLinearperf,add=T,col="purple")
+  plot(MMPClogisticperf,add=T,col="deeppink")
+  plot(RFperf,add=T,col="brown")
+  plot(naivelogisticperf,add=T)
+  legend("bottomright", legend=c("Ridge","elastic","gbm","SVMLinear","MMPClogistic","RF","naivelogistic"),
+       col=c("red", "blue","dark green","purple","deeppink","brown","black"), lty=1:7, cex=0.8)
+  abline(0,1)
+  dev.off()
+  
+    Ridgeperf<-performance(predObjRidge,"prec","rec")
+  elasticperf<-performance(predObjelastic,"prec","rec")
+  gbmperf<-performance(predObjgbm,"prec","rec")
+  SVMLinearperf<-performance(predObjSVMLinear,"prec","rec")
+  MMPClogisticperf<-performance(predObjMMPClogistic,"prec","rec")
+  RFperf<-performance(predObjRF,"prec","rec")
+  naivelogisticperf<-performance(predObjnaivelogistic,"prec","rec")
+  
+  png(dir %&% r %&% "_PR_curve.png")
+  plot(Ridgeperf,col="red",main=r)
+  plot(elasticperf,add=T,col="blue")
+  plot(gbmperf,add=T,col="dark green")
+  plot(SVMLinearperf,add=T,col="purple")
+  plot(MMPClogisticperf,add=T,col="deeppink")
+  plot(RFperf,add=T,col="brown")
+  plot(naivelogisticperf,add=T)
+  legend("topright", legend=c("Ridge","elastic","gbm","SVMLinear","MMPClogistic","RF","naivelogistic"),
+       col=c("red", "blue","dark green","purple","deeppink","brown","black"), lty=1:7, cex=0.8)
+  abline(0.5,0)
+  dev.off()
+}
+
+```
+
+
+
+```{r}
+accuracy_df_summary<-accuracy_df %>% pivot_longer(!outcome) %>% group_by(outcome,name) %>% summarise(meanAccuracy=mean(value))%>% ungroup() 
+supplemental_summary<-AUC_summary %>% inner_join(accuracy_df_summary,by=c("name","outcome"))
+class_proportions<-classes_df %>% mutate(out=if_else(out=="responder",1,0)) %>% group_by(outcome) %>% summarise(count1=sum(out == 1),count0=sum(out == 0)) %>% mutate(percent_responder=count1/(count0+count1))
+
+tmp<- left_join(supplemental_summary,class_proportions,by="outcome")
+fwrite(tmp,dir %&%"supplemental_table_model_performance_summary.csv")
+tmp %>% group_by(outcome) %>% slice_max(meanAUC,n=1,with_ties = F) %>% ungroup() %>%
+  fwrite(dir %&% "main_table_model_performance_summary.csv")
+
+```
+
+
+
+```{r}
+ranked_data<-tmp %>% filter(name != "degenerate") %>% group_by(outcome) %>% mutate(rank=rank(meanAUC))
+algorithm_ranks<- ranked_data %>% ungroup %>% group_by(name) %>% summarise(average_rank=median(rank)) %>% arrange(average_rank)
+```

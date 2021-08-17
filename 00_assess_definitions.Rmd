@@ -1,0 +1,132 @@
+---
+title: ''
+author: "Ryan Schubert"
+date: "7/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(caret)
+"%&%" = function(a,b) paste0(a,b)
+set.seed(1234)
+```
+
+
+```{r}
+
+test.data.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\Test data\\"
+list.files(test.data.dir)
+test.data<-fread(test.data.dir %&% "ML_10pct.csv")
+colnames(test.data)
+table(test.data$pclitemspct10r)
+```
+
+```{r}
+
+data.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\datasets\\3 Week IOP\\"
+list.files(data.dir)
+ThreeWeekData<-read_xlsx(data.dir %&% "IOP_DATA_SET_6-12-2020 with Manual Corrections.xlsx",na=c("N/A","NULL","Not Applicable","NA","\\s","*Unknown","*Unspecified","Unknown","Refusal","No Response","-", "Not Available"))
+out.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+```
+
+```{r}
+
+# 
+#                      "InjuryDescription_4",
+#                      "InjuryDescription_8",
+#                      "InjuryDescription_10",
+#                      "InjuryDescription_6",
+desired_variables<-c("PAT_ID",
+                     "MRN",
+                     "IOP_START_DATE",
+                     "B" %&% 1:5,
+                     "C" %&% 1:2, 
+                     "D" %&% 1:7, 
+                     "E" %&% 1:6,
+                     "PCL" %&% 1:20,
+                     "PCL_SCORE",
+                     "PCL" %&% 1:20 %&% "_DAY14",
+                     "PCL_DAY14",
+                     "PHQ" %&% 1:9,
+                     "PTCI" %&% 1:33,
+                     "NSI" %&% 1:22,
+                     "gender",
+                     "AGE_AT_COHORT_START",
+                     "Ethnicity",
+                     "FirstRace",
+                     "Education_Level_Num",
+                     "MST" %&% 1:3,
+                     "COHORT",
+                     "COHORT_TYPE",
+                     "MaritalStatus",
+                     "Post911",
+                     "Rank",
+                     "Branch",
+                     "Deployed_YN")
+Modeling_data<-ThreeWeekData %>% dplyr::select(one_of(desired_variables)) %>%
+  mutate(NSIValid=NSI1 + NSI2 + NSI3 + NSI5 + NSI6 + NSI8 + NSI9 + NSI11 + NSI15 + NSI16,
+         NSI=NSI1 + NSI2 + NSI3 + NSI4 + NSI5 + NSI6 + NSI7 + NSI8 + NSI9 + NSI10 + NSI11 + NSI12 + NSI13 + NSI14 + NSI15 + NSI16 + NSI17 + NSI18 + NSI19 + NSI20 + NSI21 + NSI22) %>%
+  filter(!(COHORT %in% 1:3)) %>% 
+  dplyr::select(-COHORT)
+```
+
+```{r}
+
+duplicates<- Modeling_data %>%
+  mutate(IOP_START_DATE=as.Date(IOP_START_DATE, '%y-%m-%d')) %>%
+  filter((PAT_ID %in% names(table(Modeling_data$PAT_ID))[table(Modeling_data$PAT_ID) > 1])) %>% 
+  filter(!is.na(PCL_DAY14)) #filter to those with PCL day 14 first
+duplicates<-duplicates %>%
+  mutate(nMiss=apply(duplicates,1,FUN=function(x)(sum(is.na(x))))) %>%
+  group_by(PAT_ID) %>%
+  slice_min(nMiss,n=1) %>% #filter to whichever is least missing
+  slice_max(IOP_START_DATE,n=1) %>% #if they are tied take the most recent one
+  ungroup() %>% 
+  dplyr::select(-IOP_START_DATE,-nMiss)
+
+#now remove the duplicates from the modeling data set and then readd the ones I have filtered to
+Modeling_data<-Modeling_data %>% 
+  filter(!(PAT_ID %in% names(table(Modeling_data$PAT_ID))[table(Modeling_data$PAT_ID) > 1])) %>%
+  dplyr::select(-IOP_START_DATE) %>% 
+  rbind.data.frame(duplicates)
+Modeling_data<-Modeling_data[complete.cases(Modeling_data),]
+```
+
+
+three definitions to test.
+
+1. Percent change in the number of PCL items meeting a clinically meaningful definition >=2
+
+2. Percent change in the sum of PCL items meeting a clinically meaningful definition >=2
+
+3. Percent change in the sum of the set of PCL items meeting a clinically meaningful definition at baseline >=2
+
+```{r}
+countOver2<-function(x){sum(x>=2)}
+sumOver2<-function(x){sum(x[x>=2])}
+matchedSumOver2<-function(x,y){sum(x[y>=2])}
+
+#definition1
+n_meaningful_base<-Modeling_data %>% select(PCL1:PCL20) %>%
+  apply(.,MARGIN=1,countOver2)
+n_meaningful_post<-Modeling_data %>% select(PCL1_DAY14:PCL20_DAY14) %>%
+  apply(.,MARGIN=1,countOver2)
+
+definition1<-Modeling_data %>% 
+  mutate(pct_item_reduction=(n_meaningful_base-n_meaningful_post)/n_meaningful_base,
+         def1=if_else(pct_item_reduction >= .1 & PCL_DAY14 < 33 ,1,0),
+         def1Loose=if_else(pct_item_reduction >= .1 | PCL_DAY14 < 33 ,1,0),
+         )
+table(definition1$def1)
+table(definition1$def1Loose)
+
+definition1 %>% filter(PCL_DAY14 < 33) %>% select(pct_item_reduction,PCL_SCORE,PCL_DAY14) %>% View()
+
+```
+
+

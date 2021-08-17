@@ -1,0 +1,337 @@
+---
+title: "fifty percent reduction"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(caret)
+"%&%" = function(a,b) paste0(a,b)
+set.seed(1234)
+```
+
+
+```{r}
+
+data.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\datasets\\3 Week IOP\\"
+list.files(data.dir)
+ThreeWeekData<-read_xlsx(data.dir %&% "IOP_DATA_SET_6-12-2020 with Manual Corrections.xlsx",na=c("N/A","NULL","Not Applicable","NA","\\s","*Unknown","*Unspecified","Unknown","Refusal","No Response","-", "Not Available"))
+out.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+```
+
+get relevant variable names from reliable change data
+
+
+```{r}
+dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\reliable change\\"
+RCIdata<-fread(dir %&% "reliablechangedataset.csv")
+colnames(RCIdata)
+# rm(RCIdata)
+```
+
+demographic variables
+"sex", x
+"age", x
+"post911", x
+"ethnic", x
+"race", x
+"deployed", x
+"nsivalid", x
+"nsi", x
+"mst" x
+one hot encoded demographic variables
+referral, - not in data set
+marriage, x
+branch, x
+education x
+
+baseline psychiatric and medical variables
+caps scores x
+ptci x
+phq x
+pcl x
+"auditc"
+"anxietytx - not in dataset
+"depressiontx" - not in dataset
+"substancetx"- not in dataset
+"ptsdtx" - not in dataset
+"tbitx" - not in dataset
+
+day 14 PCL scores x
+
+
+```{r}
+# 
+#                      "InjuryDescription_4",
+#                      "InjuryDescription_8",
+#                      "InjuryDescription_10",
+#                      "InjuryDescription_6",
+desired_variables<-c("PAT_ID",
+                     "MRN",
+                     "IOP_START_DATE",
+                     "B" %&% 1:5,
+                     "C" %&% 1:2, 
+                     "D" %&% 1:7, 
+                     "E" %&% 1:6,
+                     "PCL" %&% 1:20,
+                     "PCL_SCORE",
+                     "PCL" %&% 1:20 %&% "_DAY14",
+                     "PCL_DAY14",
+                     "PHQ" %&% 1:9,
+                     "PTCI" %&% 1:33,
+                     "NSI" %&% 1:22,
+                     "AUDITC" %&% 1:3,
+                     "gender",
+                     "AGE_AT_COHORT_START",
+                     "Ethnicity",
+                     "FirstRace",
+                     "Education_Level_Num",
+                     "MST" %&% 1:3,
+                     "COHORT",
+                     "COHORT_TYPE",
+                     "MaritalStatus",
+                     "Post911",
+                     "Rank",
+                     "Branch",
+                     "Deployed_YN")
+Modeling_data<-ThreeWeekData %>% dplyr::select(one_of(desired_variables)) %>%
+  mutate(NSIValid=NSI1 + NSI2 + NSI3 + NSI5 + NSI6 + NSI8 + NSI9 + NSI11 + NSI15 + NSI16,
+         NSI=NSI1 + NSI2 + NSI3 + NSI4 + NSI5 + NSI6 + NSI7 + NSI8 + NSI9 + NSI10 + NSI11 + NSI12 + NSI13 + NSI14 + NSI15 + NSI16 + NSI17 + NSI18 + NSI19 + NSI20 + NSI21 + NSI22,
+         AUDITC=AUDITC1 + AUDITC2 + AUDITC3) %>%
+  filter(!(COHORT %in% 1:3)) %>% 
+  dplyr::select(-COHORT)
+vis_miss(Modeling_data)
+```
+mostly caps scores and pcl day 14 are missing - both are important predictors
+
+imputation has been previously found to not be highly effective. Can reserve an attempt at impuation later.
+
+grab additional variables
+
+```{r}
+
+additionalVariables<-fread("C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\3WeekIOP_MRN.csv",na.strings = c("NULL","")) %>%
+  mutate(tbitx = case_when(
+    is.na(`RUSH R ROAD HOME TBI INDICATOR`) ~ NA_real_,
+    `RUSH R ROAD HOME TBI INDICATOR` == "N/A" | `RUSH R ROAD HOME TBI INDICATOR` == "None" ~ 0,
+    T ~ 1
+    ),
+    ptsdtx = case_when(
+    is.na(`RUSH R ROAD HOME PTSD INDICATOR`) ~ NA_real_,
+    `RUSH R ROAD HOME PTSD INDICATOR` == "N/A" | `RUSH R ROAD HOME PTSD INDICATOR` == "None" ~ 0,
+    T ~ 1
+    ),
+    substancetx = case_when(
+    is.na(`RUSH R ROAD HOME SUBSTANCE ABUSE INDICATOR`) ~ NA_real_,
+    `RUSH R ROAD HOME SUBSTANCE ABUSE INDICATOR` == "N/A" | `RUSH R ROAD HOME SUBSTANCE ABUSE INDICATOR` == "None" ~ 0,
+    T ~ 1
+    ),
+    depressiontx = case_when(
+    is.na(`RUSH R ROAD HOME DEPRESSION INDICATOR`) ~ NA_real_,
+    `RUSH R ROAD HOME DEPRESSION INDICATOR` == "N/A" | `RUSH R ROAD HOME DEPRESSION INDICATOR` == "None" ~ 0,
+    T ~ 1
+    ),
+    anxietytx = case_when(
+    is.na(`RUSH R ROAD HOME ANXIETY INDICATOR`) ~ NA_real_,
+    `RUSH R ROAD HOME ANXIETY INDICATOR` == "N/A" | `RUSH R ROAD HOME ANXIETY INDICATOR` == "None" ~ 0,
+    T ~ 1
+    ),
+    referral = case_when(
+      `RUSH R ROAD HOME REFERRAL SOURCE 2` %in% c("WCN","WWP Local") ~ 0,
+      `RUSH R ROAD HOME REFERRAL SOURCE 2` %in% c("RHP Employee","Rush Employee/Patient") ~ 2,
+      `RUSH R ROAD HOME REFERRAL SOURCE 2` %in% c("Hines VA","JBVA","Vet Center","VA Facility/Provider") ~ 3,
+      `RUSH R ROAD HOME REFERRAL SOURCE 2` %in% c("RHP Outreach/Events","RHP Social Media","RHP Website") ~ 4,
+      `RUSH R ROAD HOME REFERRAL SOURCE 2` %in% c("Community Provider, Behavioral Health","Community Provider, Non-Behavioral Health") ~ 5,
+      T ~ 1
+    ), referral = as.factor(referral)
+  )
+names(table(additionalVariables$`RUSH R ROAD HOME REFERRAL SOURCE 2`))
+Modeling_data<-inner_join(Modeling_data,additionalVariables,by=c("MRN" = "IdentityMRN")) %>%
+  dplyr::select(-one_of(c("ENC_DATE",
+                          "RUSH R ROAD HOME TBI INDICATOR",
+                          "RUSH R ROAD HOME PTSD INDICATOR",
+                          "RUSH R ROAD HOME SUBSTANCE ABUSE INDICATOR",
+                          "RUSH R ROAD HOME DEPRESSION INDICATOR", 
+                          "RUSH R ROAD HOME ANXIETY INDICATOR", 
+                          "RUSH R ROAD HOME SERV CONNECTED HOW MUCH", #this variable is highly missing so i am going to remove until told i have to keep it
+                          "RUSH R ROAD HOME SERV. CONNECTED HEALTH PROB",
+                          "RUSH AMB  ROAD HOME SERV CONNECTED PTSD", 
+                          "RUSH R ROAD HOME SERV CONNECTED PTSD HOW MUCH", 
+                          "RUSH R ROAD HOME SERV CONNECTED TBI",
+                          "RUSH R ROAD HOME SERV CONNECTED TBI HOW MUCH",  
+                          "RUSH R ROAD HOME REFERRAL SOURCE 2" )))
+colnames(Modeling_data)
+```
+
+
+
+check for duplicates
+
+```{r}
+
+duplicates<- Modeling_data %>%
+  mutate(IOP_START_DATE=as.Date(IOP_START_DATE, '%y-%m-%d')) %>%
+  filter((MRN %in% names(table(Modeling_data$MRN))[table(Modeling_data$MRN) > 1])) %>% 
+  filter(!is.na(PCL_DAY14)) #filter to those with PCL day 14 first
+duplicates<-duplicates %>%
+  mutate(nMiss=apply(duplicates,1,FUN=function(x)(sum(is.na(x))))) %>%
+  group_by(MRN) %>%
+  slice_min(nMiss,n=1,with_ties = F) %>% #filter to whichever is least missing
+  slice_max(IOP_START_DATE,n=1,with_ties = F) %>% #if they are tied take the most recent one
+  ungroup() %>% 
+  dplyr::select(-IOP_START_DATE,-nMiss)
+
+#now remove the duplicates from the modeling data set and then readd the ones I have filtered to
+Modeling_data<-Modeling_data %>% 
+  filter(!(MRN %in% names(table(Modeling_data$MRN))[table(Modeling_data$MRN) > 1])) %>%
+  dplyr::select(-IOP_START_DATE) %>% 
+  rbind.data.frame(duplicates)
+```
+
+
+# One hot encode/dummy code variables according to Dale's encoding
+
+gender x
+ethnicity x
+FirstRace x
+Education Level - Dale has aggregated graduate level degrees into one category
+COHORT TYPE - using this as MST status, but is not exact - some people may be classified into the combat cohort based on the primary index of their trauma but may have experienced both x
+RANK - Dale has only encoded E1-6 and all O, did not specify E7-8 or WO1-3.  Would incl
+MARRIAGE STATUS x
+POST 911 x
+BRANCH x
+Deployed x
+
+
+
+```{r}
+# table(RCIdata$rankd2,RCIdata$rankd3)
+Modeling_data<-Modeling_data %>% 
+  mutate(gender=if_else(gender=="Male",0,1),
+         Ethnicity=if_else(Ethnicity == "Not Hispanic or Latino",0,1),
+         FirstRace=if_else(FirstRace=="White",0,1),
+         COHORT_TYPE=if_else(COHORT_TYPE=="MST",1,0),
+         Deployed_YN=if_else(Deployed_YN=="Y",1,0),
+         Post911=if_else(Post911=="Y",1,0),
+         MaritalStatus=if_else(MaritalStatus == "Married" | MaritalStatus == "Domestic Partner", 0,1),
+         mst=case_when(
+           COHORT_TYPE==1 ~ 1,
+           !is.na(MST1) & MST1 == 1 ~ 1,
+           !is.na(MST2) & MST2 == 1 ~ 1,
+           !is.na(MST3) & MST3 == 1 ~ 1,
+           COHORT_TYPE==0 ~ 0
+         ),
+         Rank=case_when(
+           Rank %in% c("E-" %&% 1:3) ~ 0,
+           Rank %in% c("E-" %&% 4:9) ~ 1,
+           Rank %in% c("O-" %&% 1:6, "WO-" %&% 1:3) ~ 2
+           ),Rank=as.factor(Rank),
+         Branch=case_when(
+           Branch %in% c("US Army","US Army National Guard") ~ 0,
+           Branch == "US Air Force" ~ 1,
+           Branch == "US Navy" ~ 2,
+           Branch == "US Marine Corps" ~ 3,
+           is.na(Branch) ~ NA_real_,
+           T ~ 4
+         ),Branch=as.factor(Branch),
+         Education_Level_Num =if_else(Education_Level_Num == 9,7,Education_Level_Num),Education_Level_Num=as.factor(Education_Level_Num)
+         ) %>%
+  dplyr::select(-MST1,-MST2,-MST3,-AUDITC1,-AUDITC2,-AUDITC3)
+
+#one hot encode
+dum<-dummyVars("~ .",data=Modeling_data)
+Modeling_data<-data.frame(predict(dum,Modeling_data))
+colnames(Modeling_data)
+
+```
+now create outcome variables
+
+10 pt reduction x
+10 pt reduction with no E (?)
+10 percent reduction and below 33 x
+reliable change in reduction
+50 percent reduction x
+
+```{r}
+
+drop<-c("MRN",
+        "Education_Level_Num.1",
+        "referral.0",
+        "Rank.0",
+        "Branch.0",
+        "PCL_SCORE",
+        "PCL_DAY14",
+        "PAT_ID",
+        "PCL" %&% 1:20 %&% "_DAY14",
+        "NSI" %&% 1:22)
+
+countOver2<-function(x){sum(x>=2)}
+sumOver2<-function(x){sum(x[x>=2])}
+sumMatchedOver2<-function(x,y){sum(x[y>=2])}
+
+n_meaningful_base<-Modeling_data %>% select(PCL1:PCL20) %>%
+  apply(.,MARGIN=1,countOver2)
+n_meaningful_post<-Modeling_data %>% select(PCL1_DAY14:PCL20_DAY14) %>%
+  apply(.,MARGIN=1,countOver2)
+
+meaningful_base<-Modeling_data %>% select(PCL1:PCL20) %>%
+  apply(.,MARGIN=1,sumOver2)
+meaningful_post<-Modeling_data %>% select(PCL1_DAY14:PCL20_DAY14) %>%
+  apply(.,MARGIN=1,sumOver2)
+
+
+matched_PCL<-rep(NA,nrow(Modeling_data))
+for (i in 1:nrow(Modeling_data)){
+  base_PCL<- Modeling_data[i,] %>% select(PCL1:PCL20) %>% unlist
+  post_PCL<- Modeling_data[i,] %>% select(PCL1_DAY14:PCL20_DAY14) %>% unlist
+  matched_PCL[i]<-sumMatchedOver2(base_PCL,post_PCL)
+}
+
+outcome_data<-Modeling_data %>%
+  mutate(delta_PCL=PCL_SCORE - PCL_DAY14,
+         pct_PCL=delta_PCL/PCL_SCORE,
+         pct_meaningful_reduction=(meaningful_base-meaningful_post)/meaningful_base,
+         pct_item_reduction=(n_meaningful_base-n_meaningful_post)/meaningful_base,
+         pct_matched_reduction=(meaningful_base-matched_PCL)/meaningful_base,
+         PCL_SCORE_noE=PCL1 + PCL2 + PCL3 + PCL4 + PCL5 + PCL6 + PCL7 + PCL8 + PCL9 + PCL10 + PCL11 + PCL12 + PCL13 + PCL14 + PCL15,
+         PCL_DAY14_noE=PCL1_DAY14 + PCL2_DAY14 + PCL3_DAY14 + PCL4_DAY14 + PCL5_DAY14 + PCL6_DAY14 + PCL7_DAY14 + PCL8_DAY14 + PCL9_DAY14 + PCL10_DAY14 + PCL11_DAY14 + PCL12_DAY14 + PCL13_DAY14 + PCL14_DAY14 + PCL15_DAY14,
+         delta_PCL_noE=PCL_SCORE_noE - PCL_DAY14_noE,
+         Outcome10pt=if_else(delta_PCL >= 10,1,0),
+         Outcome10ptnoE=if_else(delta_PCL_noE >= 10,1,0),
+         Outcome10pct=if_else(pct_PCL >= 0.1 & PCL_DAY14<33,1,0),
+         Outcome50pct=if_else(pct_PCL >= .50 ,1,0) ,
+         Outcome10pctMeaningful=if_else(pct_meaningful_reduction >= 0.1 & PCL_DAY14 < 33,1,0),
+         Outcome10pctItems33=if_else(pct_meaningful_reduction >= 0.1 & PCL_DAY14 < 33,1,0),
+         Outcome10pctItems=if_else(pct_item_reduction >= 0.1 | PCL_DAY14 < 33,1,0),
+         Outcome10pctMatchedMeaningful=if_else(pct_matched_reduction >= 0.1 & PCL_DAY14 < 33,1,0)
+         ) %>% # will use the dataset that Dale sent me sent me for RCI
+  dplyr::select(-one_of(drop))
+# plot(outcome_data$n_meaningful_base,outcome_data$PCL_SCORE)
+# table()
+
+table(outcome_data$Outcome10pt)
+table(outcome_data$Outcome10ptnoE)
+table(outcome_data$Outcome10pct)
+table(outcome_data$Outcome50pct)
+
+# outcome_data<- filter(outcome_data,complete.cases(outcome_data))
+# table(outcome_data$Outcome10pct)
+```
+
+```{r}
+# tmp<-outcome_data %>% dplyr::select(PCL_SCORE,PCL_DAY14,delta_PCL,pct_PCL,PCL_DAY14_noE,n_meaningful_base,n_meaningful_post,pct_meaningful_reduction,Outcome10pct)
+# View(tmp)
+```
+
+```{r}
+fwrite(outcome_data,out.dir %&% "outcome_data_with_miss.csv")
+missing<- filter(outcome_data,!complete.cases(outcome_data))
+outcome_data<- filter(outcome_data,complete.cases(outcome_data))
+table(outcome_data$Outcome10pct)
+fwrite(outcome_data,out.dir %&% "outcome_data_complete_cases.csv")
+vis_miss(outcome_data)
+```

@@ -1,0 +1,117 @@
+---
+title: "plot loss"
+author: "Ryan Schubert"
+date: "8/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+"%&%" = function(a,b) paste0(a,b)
+
+```
+
+
+```{r}
+
+logloss<-function(y,p){
+ 0 - (y * log(p) + (1-y)*log(1-p))
+}
+
+```
+
+# Data
+
+```{r}
+data.dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+list.files(data.dir)
+input<-data.frame(predfile=list.files(data.dir,"predictions.csv"),classfile=list.files(data.dir,"classes.csv"))
+
+
+data<-fread(data.dir %&% input[1,1]) %>% 
+  mutate(true_class=if_else(out=="responder",1,0),
+         PCL_base= PCL1 + PCL2 + PCL3 + PCL4 + PCL5 +PCL6 + PCL7 +PCL8 + PCL9 +PCL10 + PCL11 +PCL12 +PCL13 + PCL14 +PCL15 + PCL16 +PCL17 + PCL18 +PCL19 + PCL20)
+
+
+
+
+```
+
+
+
+process
+for each outcome variable
+for each algorithm
+within each fold
+calculate the log loss for each observation
+calculate the pearson correlation between initial total score and log loss
+use fisher transformation to convert pearson correlation to zscore
+use stouffers method for combining zscores to calculate the overall zscore and pvalue
+
+```{r}
+
+for(i in 1:nrow(input)){
+  print(input[i,1])
+    data<-fread(data.dir %&% input[i,1]) %>% 
+    mutate(true_class=if_else(out=="responder",1,0),
+           PCL_base= PCL1 + 
+             PCL2 + 
+             PCL3 + 
+             PCL4 + 
+             PCL5 +
+             PCL6 + 
+             PCL7 +
+             PCL8 + 
+             PCL9 +
+             PCL10 + 
+             PCL11 +
+             PCL12 +
+             PCL13 + 
+             PCL14 +
+             PCL15 + 
+             PCL16 +
+             PCL17 + 
+             PCL18 +
+             PCL19 + 
+             PCL20)
+  
+  methods<-colnames(data)[2:8]
+  folds<-1:5
+  estimate_matrix<-matrix(NA,nrow=5,ncol=length(methods))
+  colnames(estimate_matrix)<-methods
+  zscore_matrix<-matrix(NA,nrow=5,ncol=length(methods))
+  colnames(zscore_matrix)<-methods
+  for (m in 1:length(methods)){
+    for (f in 1:5){
+      pred<-data %>% filter(id==f) %>% select(one_of(methods[m])) %>% unlist() %>% unname()
+      actual<-data %>% filter(id==f) %>% select(true_class) %>% unlist() %>% unname()
+      loss<-logloss(actual,pred)
+      PCL_base<-data %>% filter(id==f) %>% select(PCL_base) %>% unlist() %>% unname()
+      plot(x=loss,y=PCL_base,main=methods[m] %&% input[i,1])
+      estimate_matrix[f,m]<-cor.test(loss,PCL_base,method="pearson")$estimate
+      zscore_matrix[f,m]<-atanh(estimate_matrix[f,m])*sqrt(length(loss) - 3)
+    }
+  }
+  #Stouffers method for combing zscores
+  zscore_est <- colSums(zscore_matrix) / sqrt(5)
+  zscore_pval <- 2*pnorm(abs(zscore_est), lower.tail = FALSE)
+  print(zscore_est)
+  print(zscore_pval)
+}
+
+# tmp<-data %>% mutate(loss=logloss(true_class,Ridge))
+
+```
+
+
+```{r}
+
+
+```
+
+
+
+
