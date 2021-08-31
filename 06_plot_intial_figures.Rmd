@@ -1,0 +1,97 @@
+---
+title: "06_summarize_results"
+author: "Ryan Schubert"
+date: "7/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(viridis)
+"%&%" = function(a,b) paste0(a,b)
+```
+
+
+
+```{r}
+dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+files<-list.files(dir,pattern = "Cross_validated_metrics*")
+
+cv_metrics_list<-vector(mode="list",length=length(files))
+for (f in 1:length(files)){
+  cv_metrics_list[[f]]<-fread(dir %&% files[f]) %>% mutate(source=files[f])
+}
+cv_metrics_df<-bind_rows(cv_metrics_list) %>% 
+  mutate(outcome=gsub("Cross_validated_metrics_","",source),
+         outcome=gsub("\\_outcome.csv","",outcome),
+         outcome=gsub("_reduction","",outcome),
+         outcome=gsub("_"," ",outcome))
+
+plotAUCData<-cv_metrics_df %>% 
+  group_by(outcome) %>%
+  slice_max(AUC) %>% ungroup()
+library(scales)
+AUC1<-ggplot(plotAUCData) +
+  geom_col(aes(x=reorder(outcome, -AUC),y=AUC,fill=algorithm),position="dodge") +
+  theme_bw() +
+  scale_fill_viridis(discrete = T,) +
+  geom_abline(slope = 0,intercept=0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  scale_y_continuous(limits=c(0.5,1),oob = rescale_none) +
+  xlab("Response Variable") +
+  ggtitle("Highest AUC Per Response")
+  ggsave(dir %&% "AUC_bar_ylim0.5-1.png",plot=AUC1)
+AUC2<-ggplot(plotAUCData) +
+  geom_col(aes(x=reorder(outcome, -AUC),y=AUC,fill=algorithm),position="dodge") +
+  theme_bw() +
+  scale_fill_viridis(discrete = T,) +
+  geom_abline(slope = 0,intercept=0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  scale_y_continuous(limits=c(0,1),oob = rescale_none)+
+  xlab("Response Variable") +
+  ggtitle("Highest AUC Per Response")
+  ggsave(dir %&% "AUC_bar_ylim0-1.png",plot=AUC2)
+
+ggplot(plotAUCData) +
+  geom_col(aes(x=reorder(outcome, -accuracy),y=accuracy,fill=algorithm),position="dodge") +
+  theme_bw() +
+  scale_fill_viridis(discrete = T,) +
+  geom_abline(slope = 0,intercept=0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  scale_y_continuous(limits=c(0,1),oob = rescale_none)+
+  xlab("Response Variable") +
+  ggtitle("Highest AUC Per Response")
+
+ggplot(plotAUCData) +
+  geom_point(aes(x=AUC,y=accuracy,colour=algorithm)) +
+  theme_bw() +
+  scale_fill_viridis(discrete = T) +
+  scale_colour_viridis(discrete=T) +
+  geom_label_repel(aes(x=AUC,y=accuracy,label=outcome))
+  ggtitle("Highest AUC Per Response")
+
+
+```
+
+```{r}
+library(ggrepel)
+plotAUCaccuracy<-cv_metrics_df %>% filter(algorithm=="degenerate") %>% inner_join(plotAUCData,by="outcome")
+ggplot(plotAUCaccuracy,aes(x=accuracy.x,y=accuracy.y)) + 
+  ylab("Accuracy of highest AUC algorithm") +
+  xlab("Degenerate Prediction Accuracy") + 
+  theme_bw() +
+  geom_point() + 
+  geom_abline(slope=1,intercept=0) +
+  xlim(0.45,1) + ylim(0.45,1) +
+  geom_label_repel(aes(label = outcome))
+
+
+```
+
+```{r}
+fwrite(cv_metrics_df,dir %&% "concat_cv_metrics.csv")
+
+```

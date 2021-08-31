@@ -1,0 +1,263 @@
+---
+title: "Untitled"
+author: "Ryan Schubert"
+date: "7/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(ggplot2)
+library(corrplot)
+library(visdat)
+library(viridis)
+library(glmnet)
+library(ranger)
+library(e1071)
+library(MASS)
+library(MLmetrics)
+library(gbm)
+library(caret)
+library(MXM)
+library(ROCR)
+"%&%" = function(a,b) paste0(a,b)
+set.seed(1234)
+
+```
+
+## read in data
+
+```{r}
+dir<-"C:\\Users\\rshoo\\OneDrive\\Desktop\\rush\\ML project\\replicate all response models\\"
+data<-fread(dir %&%  "outcome_data_complete_cases.csv")
+colnames(data)
+```
+
+# 10 point reduction models
+
+
+```{r}
+tenPointData<- data %>% dplyr::select(-delta_PCL,-pct_PCL,-PCL_SCORE_noE,-PCL_DAY14_noE,-delta_PCL_noE,-COHORT_TYPE,-Outcome10ptnoE,-Outcome10pct,-Outcome50pct,-Outcome10pctItems,-Outcome10pctItems33,-Outcome10pctMatchedMeaningful,-Outcome10pt,-pct_meaningful_reduction,-pct_item_reduction,-pct_matched_reduction)
+colnames(tenPointData)
+
+```
+
+initialize
+
+```{r}
+
+# initialize folds
+k<-5
+fold_ids<-sample(1:k,nrow(tenPointData),replace = T)
+table(fold_ids,tenPointData$Outcome10pctMeaningful)#reasonably balanced folds with each class in each
+
+
+#initialize metrics matrices
+methods<-c("Ridge","elastic","gbm","SVMLinear","MMPClogistic","RF","naivelogistic","degenerate")
+accuracy_rate<-matrix(NA,nrow=k,ncol=length(methods))
+AUC_cv<-matrix(NA,nrow=k,ncol=length(methods))
+colnames(accuracy_rate)<-methods
+colnames(AUC_cv)<-methods
+
+
+#tune grids
+ridge_tunegrid<-expand.grid(alpha = 0,
+                            lambda = seq(0.001,0.1,by = 0.001))
+
+elastic_tunegrid<-expand.grid(alpha = seq(0,1,by=0.2),
+                              lambda = seq(0.001,0.1,by = 0.001))
+
+gbm_tunegrid<-expand.grid(interaction.depth = c(1,2),
+                      n.trees = c(500), 
+                      shrinkage = c(0.001,0.01,0.1),
+                      n.minobsinnode = c(1,3,5))
+
+svmL_tunegrid<-expand.grid(C=c(1,2,5,10))
+
+rf_grid<-expand.grid(mtry = 2,
+                       splitrule = c("gini","extratrees"),
+                       min.node.size = c(1, 3, 5))
+
+```
+
+
+```{r}
+
+for (fold in 1:k){
+  holdout<-tenPointData[fold_ids == fold,]
+  holdin<-tenPointData[fold_ids!=fold,]
+
+  MMPC_holdin_pred<-holdin %>% dplyr::select(-Outcome10pctMeaningful) %>% as.matrix()
+  MMPC_holdin_response<-holdin %>% dplyr::select(Outcome10pctMeaningful) %>% unlist %>% unname()
+  
+  holdin<-holdin %>% mutate(Outcome10pctMeaningful=as.factor(if_else(Outcome10pctMeaningful==0,"nonresponder","responder")))
+  
+  ridge_ctrl <- trainControl(method="cv", 
+                             number=5, 
+                             returnResamp="all",
+                             classProbs=TRUE,
+                             summaryFunction=twoClassSummary)
+
+  ridge_model <- train(Outcome10pctMeaningful ~ .,
+                       data=holdin,
+                       method = "glmnet", 
+                       trControl = ridge_ctrl,
+                       verbose=F,
+                       metric='ROC',
+                       family="binomial",
+                       tuneGrid = ridge_tunegrid)
+  
+  accuracy_rate[fold,1]<-sum(diag(table(predict(ridge_model,holdout,type="raw"),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+  predObj<-prediction(predict(ridge_model,holdout,type="prob")[,2],as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,1]<-perf@y.values[[1]]
+
+  #ridge surprisingly predicted several as nonresponders unlike rf
+  #lets tune on a larger set of alphas
+  elastic_ctrl <- trainControl(method="cv", 
+                             number=5, 
+                             returnResamp="all",
+                             classProbs=TRUE,
+                             summaryFunction=twoClassSummary)
+
+  elastic_model <- train(Outcome10pctMeaningful ~ .,
+                       data=holdin,
+                       method = "glmnet", 
+                       trControl = elastic_ctrl,
+                       verbose=F,
+                       metric='ROC',
+                       family="binomial",
+                       tuneGrid = elastic_tunegrid)
+  
+  accuracy_rate[fold,2]<-sum(diag(table(predict(elastic_model,holdout,type="raw"),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+  predObj<-prediction(predict(elastic_model,holdout,type="prob")[,2],as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,2]<-perf@y.values[[1]]
+  
+  
+  #elastic net seems slightly more accurate since it predicts fewer people as being nonresponders so not great
+  #next lets try a gbm
+  gbm_ctrl <- trainControl(method="cv", 
+                             number=5, 
+                             returnResamp="all",
+                             classProbs=TRUE,
+                             summaryFunction=twoClassSummary)
+
+  gbm_model <- train(Outcome10pctMeaningful ~ .,
+                    data=holdin,
+                    method = "gbm", 
+                    trControl = gbm_ctrl,
+                    verbose=F,
+                    metric='ROC',
+                    distribution="bernoulli",
+                    tuneGrid = gbm_tunegrid)
+  
+  accuracy_rate[fold,3]<-sum(diag(table(predict(gbm_model,holdout,type="raw"),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+  predObj<-prediction(predict(gbm_model,holdout,type="prob")[,2],as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,3]<-perf@y.values[[1]]
+  
+  #Next fit a SVM with a linear kernel
+  svmL_ctrl <- trainControl(method="cv", 
+                             number=5, 
+                             returnResamp="all",
+                             classProbs=TRUE,
+                             summaryFunction=twoClassSummary)
+
+  svmL_model <- train(Outcome10pctMeaningful ~ .,
+                    data=holdin,
+                    method = "svmLinear", 
+                    trControl = svmL_ctrl,
+                    verbose=F,
+                    metric='ROC',
+                    distribution="bernoulli",
+                    tuneGrid = svmL_tunegrid)
+  
+  accuracy_rate[fold,4]<-sum(diag(table(predict(svmL_model,holdout,type="raw"),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+  predObj<-prediction(predict(svmL_model,holdout,type="prob")[,2],as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,4]<-perf@y.values[[1]]
+  
+  #finally lets do lda
+  # lda_ctrl <- trainControl(method="cv", 
+  #                            number=5, 
+  #                            returnResamp="all",
+  #                            classProbs=TRUE,
+  #                            summaryFunction=twoClassSummary)
+
+  # lda_model <- train(Outcome10pctMeaningful ~ .,
+  #                   data=holdin,
+  #                   method = "lda", 
+  #                   trControl = lda_ctrl,
+  #                   verbose=F,
+  #                   metric='ROC',
+  #                   distribution="bernoulli")
+  
+  #get the mmpc variable set
+  
+  # holdin_pred<-holdin %>% mutate(Outcome10pctMeaningful=as.numeric(Outcome10pctMeaningful)-1) %>% as.matrix()
+  # holdin_response<-holdin_pred[,which(colnames(holdin) == "Outcome10pctMeaningful")]
+  # holdin_pred<-holdin_pred[,-which(colnames(holdin) == "Outcome10pctMeaningful")]
+
+  mmpcObj <-MMPC( target  = MMPC_holdin_response,            
+                dataset = MMPC_holdin_pred,            
+                max_k = 3,          
+                threshold = 0.2,                                      
+                test = 'testIndFisher',   
+                ini = NULL,                                           
+                hash =  TRUE, 
+                hashObject = NULL,
+                ncores = 1,         
+                backward = TRUE)
+ 
+  
+  form<-"Outcome10pctMeaningful ~ " %&% paste(colnames(holdin)[mmpcObj@selectedVars],collapse =" + " )
+  MMPCLogistic<-glm(form, data = holdin, family="binomial")
+  accuracy_rate[fold,5]<-sum(diag(table(round(predict(MMPCLogistic,holdout,type="response")),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+  predObj<-prediction(predict(MMPCLogistic,holdout,type="response"),as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,5]<-perf@y.values[[1]]
+  
+  
+  
+  #test RF
+  rf_ctrl <- trainControl(method="cv", number=5, returnResamp = "all",classProbs=TRUE)
+  # str(holdin)
+  rf_model <- train(Outcome10pctMeaningful ~ .,
+                data = holdin,
+                method = "ranger",
+                verbose=F,
+                trControl = rf_ctrl,
+                metric="ROC",
+                tuneGrid = rf_grid)
+    accuracy_rate[fold,6]<-sum(diag(table(predict(rf_model,holdout,type="raw"),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+    predObj<-prediction(predict(rf_model,holdout,type="prob")[,2],as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,6]<-perf@y.values[[1]]
+    
+    #naive logistic model
+    naiveLogistic<-glm(Outcome10pctMeaningful ~ ., data = holdin, family="binomial")
+    accuracy_rate[fold,7]<-sum(diag(table(round(predict(naiveLogistic,holdout,type="response")),holdout$Outcome10pctMeaningful)))/nrow(holdout)
+    predObj<-prediction(predict(naiveLogistic,holdout,type="response"),as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,7]<-perf@y.values[[1]]
+    
+  #lastly what is the prediction accuracy when we just predict everything as belonging to the responder class
+  accuracy_rate[fold,8]<-1-sum(holdout$Outcome10pctMeaningful==0)/nrow(holdout)
+  predObj<-prediction(rep(1,length(holdout$Outcome10pctMeaningful)),as.numeric(holdout$Outcome10pctMeaningful)-1)
+  perf<-performance(predObj,"auc")
+  AUC_cv[fold,8]<-perf@y.values[[1]]
+}
+
+
+
+```
+
+
+```{r}
+results<-data.frame(algorithm=methods,AUC=colMeans(AUC_cv),accuracy=colMeans(accuracy_rate))
+fwrite(results,dir %&% "Cross_validated_metrics_10pct_meaningful_reduction_outcome.csv")
+```
+
